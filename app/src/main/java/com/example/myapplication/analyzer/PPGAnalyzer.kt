@@ -91,13 +91,13 @@ class PPGAnalyzer(
 
         // 1. POS Algorithm
         val meanR = reds.average(); val meanG = greens.average(); val meanB = blues.average()
-        val normR = DoubleArray(windowSize) { i -> reds[i] / meanR }
-        val normG = DoubleArray(windowSize) { i -> greens[i] / meanG }
-        val normB = DoubleArray(windowSize) { i -> blues[i] / meanB }
-        val x = DoubleArray(windowSize) { i -> normG[i] - normB[i] }
-        val y = DoubleArray(windowSize) { i -> normG[i] + normB[i] - 2.0 * normR[i] }
+        val normR = DoubleArray(windowSize) { i: Int -> reds[i] / meanR }
+        val normG = DoubleArray(windowSize) { i: Int -> greens[i] / meanG }
+        val normB = DoubleArray(windowSize) { i: Int -> blues[i] / meanB }
+        val x = DoubleArray(windowSize) { i: Int -> normG[i] - normB[i] }
+        val y = DoubleArray(windowSize) { i: Int -> normG[i] + normB[i] - 2.0 * normR[i] }
         val alpha = calculateStdDev(x) / (calculateStdDev(y) + 0.0001)
-        val ppgSignal = DoubleArray(windowSize) { i -> x[i] + alpha * y[i] }
+        val ppgSignal = DoubleArray(windowSize) { i: Int -> x[i] + alpha * y[i] }
         val filteredPPG = applyBandPass(ppgSignal)
 
         // 2. Calidad y Picos
@@ -243,3 +243,4 @@ class PPGAnalyzer(
         val bytes = ByteArray(remaining()); get(bytes); return bytes
     }
 }
+
