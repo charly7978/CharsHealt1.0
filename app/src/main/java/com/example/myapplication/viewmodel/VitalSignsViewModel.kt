@@ -22,7 +22,8 @@ data class VitalSignsState(
     val arrhythmiaStatus: String = "ESPERANDO DEDO...",
     val fingerDetected: Boolean = false,
     val perfusionIndex: Double = 0.0,
-    val isStabilityReached: Boolean = false
+    val isStabilityReached: Boolean = false,
+    val lastPeakTimestamp: Long = 0L
 )
 
 class VitalSignsViewModel : ViewModel() {
@@ -30,19 +31,23 @@ class VitalSignsViewModel : ViewModel() {
     private val _uiState = MutableStateFlow(VitalSignsState())
     val uiState = _uiState.asStateFlow()
 
-    // Buffer de puntos para la gráfica — solo se modifica desde Main
+    // Buffer de puntos para la gráfica — 600 puntos (~20s a 30fps)
     val ppgPoints = mutableStateListOf<Float>()
     val peakFlags = mutableStateListOf<Boolean>()
-    private val maxPoints = 300 // ~10 segundos a 30fps
+    private val maxPoints = 600 
     var sweepIndex = 0
         private set
 
-    // Smoothing de BPM (media de últimas 3 lecturas)
+    // Smoothing de BPM (media de últimas 5 lecturas)
     private val bpmHistory = mutableListOf<Int>()
-    private val smoothWindow = 3
+    private val smoothWindow = 5
+    
+    private var lastPeakTime = 0L
 
     fun addPpgPoint(value: Double, isPeak: Boolean) {
         viewModelScope.launch(Dispatchers.Main.immediate) {
+            if (isPeak) lastPeakTime = System.currentTimeMillis()
+            
             if (ppgPoints.size >= maxPoints) {
                 ppgPoints[sweepIndex % maxPoints] = value.toFloat()
                 if (peakFlags.size > sweepIndex % maxPoints) {
@@ -78,7 +83,8 @@ class VitalSignsViewModel : ViewModel() {
                 arrhythmiaStatus = result.arrhythmiaStatus,
                 fingerDetected = result.fingerDetected,
                 perfusionIndex = result.perfusionIndex,
-                isStabilityReached = result.sqi > 0.4f && smoothBpm > 0
+                isStabilityReached = result.sqi > 0.4f && smoothBpm > 0,
+                lastPeakTimestamp = lastPeakTime
             )
         }
     }

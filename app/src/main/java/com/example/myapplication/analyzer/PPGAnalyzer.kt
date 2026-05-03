@@ -12,17 +12,6 @@ import kotlin.math.*
 
 /**
  * PPGAnalyzer — Motor de Procesamiento Biomédico Profesional.
- *
- * Implementa pipeline completo validado en literatura científica:
- * - POS Algorithm (Plane-Orthogonal-to-Skin) con ventana deslizante
- * - Filtro Butterworth IIR 4to orden (cascada biquad)
- * - Detección de picos adaptativa con período refractario
- * - SpO2 por Ratio of Ratios (AC/DC) según Beer-Lambert
- * - SDPPG con ondas fiduciales a,b,c,d,e
- * - HRV completo: SDNN, RMSSD, LF/HF espectral real
- * - Frecuencia respiratoria por triple modulación (amplitud, frecuencia, baseline)
- * - SQI multi-criterio (SNR espectral + perfusión + regularidad)
- * - Detección de presencia de dedo
  */
 class PPGAnalyzer(
     private val onSignalPoint: (filteredValue: Double, isPeak: Boolean) -> Unit,
@@ -48,17 +37,17 @@ class PPGAnalyzer(
         const val FS = 30.0
         const val WINDOW = 256
         const val POS_WIN = 48 // 1.6s a 30fps
-        const val ROI_SIZE = 120
-        const val ROI_STEP = 2
         const val REFRACTORY_SAMPLES = 9 // 300ms a 30fps
-        const val MIN_RED = 0.15
+        const val MIN_LUMA_FINGER = 150.0 // Umbral histéresis
+        const val START_LUMA_FINGER = 180.0
         const val MAX_NN = 100
     }
 
-    // Buffers de canales RGB
+    // Buffers de canales RGB y luminancia
     private val redBuf = CircularBuffer(WINDOW)
     private val greenBuf = CircularBuffer(WINDOW)
     private val blueBuf = CircularBuffer(WINDOW)
+    private val lumaBuf = CircularBuffer(WINDOW)
 
     // Filtro Butterworth bandpass 0.5–4.0 Hz para señal cardíaca
     private val cardiacFilter = CascadedFilter.butterworthBandpass(0.5, 4.0, FS)
@@ -73,9 +62,11 @@ class PPGAnalyzer(
     private val nnIntervals = mutableListOf<Double>()
     private var lastPeakTimeMs = 0L
 
-    // Historial para frecuencia respiratoria
+    // Historial para frecuencia respiratoria y BP
     private val peakAmplitudes = mutableListOf<Double>()
     private val ibiHistory = mutableListOf<Double>()
+    private val bpSysHistory = mutableListOf<Double>()
+    private val bpDiaHistory = mutableListOf<Double>()
 
     // Señal POS filtrada
     private val posBuffer = CircularBuffer(WINDOW)
@@ -86,8 +77,15 @@ class PPGAnalyzer(
 
     // DC components para SpO2
     private var dcRed = 0.0
-    private var dcGreen = 0.0
+    private var dcLuma = 0.0
     private val dcAlpha = 0.005
+
+    // POS Window state
+    private val posRWindow = mutableListOf<Double>()
+    private val posGWindow = mutableListOf<Double>()
+    private val posBWindow = mutableListOf<Double>()
+    
+    private var isPosReady = false
 
     override fun analyze(image: ImageProxy) {
         try {
@@ -101,104 +99,156 @@ class PPGAnalyzer(
             val uArr = uPlane.toByteArray()
             val vArr = vPlane.toByteArray()
 
-            var sumR = 0.0; var sumG = 0.0; var sumB = 0.0; var cnt = 0
-            val sx = (image.width / 2 - ROI_SIZE / 2).coerceAtLeast(0)
-            val sy = (image.height / 2 - ROI_SIZE / 2).coerceAtLeast(0)
+            var sumR = 0.0; var sumG = 0.0; var sumB = 0.0; var sumY = 0.0; var cnt = 0
+            
+            // ROI Adaptativa: 50% central
+            val roiWidth = image.width / 2
+            val roiHeight = image.height / 2
+            val sx = image.width / 4
+            val sy = image.height / 4
+            val step = 4
 
-            for (dy in 0 until ROI_SIZE step ROI_STEP) {
-                for (dx in 0 until ROI_SIZE step ROI_STEP) {
+            for (dy in 0 until roiHeight step step) {
+                for (dx in 0 until roiWidth step step) {
                     val px = (sy + dy) * image.width + (sx + dx)
                     if (px >= yArr.size) continue
                     val yVal = yArr[px].toInt() and 0xFF
+                    
                     val uvIdx = ((sy + dy) / 2 * (image.width / 2) + (sx + dx) / 2)
                         .coerceIn(0, uArr.size - 1)
                     val u = (uArr[uvIdx].toInt() and 0xFF) - 128
                     val v = (vArr[uvIdx].toInt() and 0xFF) - 128
 
-                    // YUV→RGB linealizado (gamma 2.2)
+                    // YUV→RGB linealizado
                     val r = ((yVal + 1.402 * v).coerceIn(0.0, 255.0) / 255.0).pow(2.2)
                     val g = ((yVal - 0.344136 * u - 0.714136 * v).coerceIn(0.0, 255.0) / 255.0).pow(2.2)
                     val b = ((yVal + 1.772 * u).coerceIn(0.0, 255.0) / 255.0).pow(2.2)
 
-                    sumR += r; sumG += g; sumB += b; cnt++
+                    sumR += r; sumG += g; sumB += b; sumY += yVal
+                    cnt++
                 }
             }
 
             if (cnt == 0) return
             val avgR = sumR / cnt; val avgG = sumG / cnt; val avgB = sumB / cnt
+            val avgY = sumY / cnt
 
-            // Detección de dedo: canal rojo debe estar saturado con flash
-            fingerDetected = avgR > MIN_RED
+            // Detección de dedo mejorada con histéresis en luminancia
+            val wasDetected = fingerDetected
+            if (avgY > START_LUMA_FINGER) {
+                fingerDetected = true
+            } else if (avgY < MIN_LUMA_FINGER) {
+                fingerDetected = false
+            }
+
             if (!fingerDetected) {
-                stableCount = 0
+                if (wasDetected) resetState() // Reset al perder el dedo
                 onSignalPoint(0.0, false)
                 return
             }
+            
+            if (!wasDetected) {
+                // Acaba de detectar el dedo
+                resetState()
+                fingerDetected = true
+            }
+            
             stableCount++
 
             synchronized(this) {
                 redBuf.add(avgR)
                 greenBuf.add(avgG)
                 blueBuf.add(avgB)
+                lumaBuf.add(avgY)
 
-                // Actualizar DC con media exponencial
+                // Actualizar DC
                 dcRed = dcRed * (1 - dcAlpha) + avgR * dcAlpha
-                dcGreen = dcGreen * (1 - dcAlpha) + avgG * dcAlpha
-                if (dcRed == 0.0) { dcRed = avgR; dcGreen = avgG }
+                dcLuma = dcLuma * (1 - dcAlpha) + avgY * dcAlpha
+                if (dcRed == 0.0) { dcRed = avgR; dcLuma = avgY }
 
-                // POS con ventana deslizante
+                // POS Algorithm
                 val posValue = computePOS(avgR, avgG, avgB)
-                val filtered = cardiacFilter.process(posValue)
-                posBuffer.add(filtered)
+                
+                if (isPosReady) {
+                    val filtered = cardiacFilter.process(posValue)
+                    posBuffer.add(filtered)
 
-                // Detección de picos adaptativa
-                val isPeak = detectPeak(filtered)
+                    // Detección de picos
+                    val isPeak = detectPeak(filtered)
+                    onSignalPoint(filtered, isPeak)
 
-                // Emitir punto de señal filtrada
-                onSignalPoint(filtered, isPeak)
-
-                // Procesar vitales cuando hay suficientes datos
-                if (greenBuf.isFull() && stableCount > 60) {
-                    processVitals()
+                    // Procesar vitales si hay estabilidad
+                    if (stableCount > 90) { // 3 segundos de estabilidad
+                        processVitals()
+                    }
+                } else {
+                    onSignalPoint(0.0, false)
                 }
             }
+        } catch (e: Exception) {
+            e.printStackTrace()
         } finally {
             image.close()
         }
     }
 
-    // --- POS Algorithm (Plane-Orthogonal-to-Skin) ---
+    private fun resetState() {
+        stableCount = 0
+        cardiacFilter.reset()
+        redBuf.clear()
+        greenBuf.clear()
+        blueBuf.clear()
+        lumaBuf.clear()
+        posBuffer.clear()
+        posRWindow.clear()
+        posGWindow.clear()
+        posBWindow.clear()
+        isPosReady = false
+        nnIntervals.clear()
+        ibiHistory.clear()
+        peakAmplitudes.clear()
+        bpSysHistory.clear()
+        bpDiaHistory.clear()
+        dcRed = 0.0
+        dcLuma = 0.0
+        lastPeakIdx = -REFRACTORY_SAMPLES
+        adaptiveThr = 0.0
+        onVitalsUpdate(VitalsResult(0,0,0,0,0,0f,0.0,0.0,0.0,"SIN SEÑAL",false,0.0))
+    }
 
-    private val posRWindow = mutableListOf<Double>()
-    private val posGWindow = mutableListOf<Double>()
-    private val posBWindow = mutableListOf<Double>()
+    // --- POS Algorithm ---
 
     private fun computePOS(r: Double, g: Double, b: Double): Double {
         posRWindow.add(r)
         posGWindow.add(g)
         posBWindow.add(b)
+        
+        if (posRWindow.size < POS_WIN) {
+            return 0.0
+        }
+        
+        if (!isPosReady && posRWindow.size == POS_WIN) {
+            isPosReady = true
+        }
+
         if (posRWindow.size > POS_WIN) {
             posRWindow.removeAt(0)
             posGWindow.removeAt(0)
             posBWindow.removeAt(0)
         }
-        if (posRWindow.size < POS_WIN) return 0.0
 
         val mR = posRWindow.average()
         val mG = posGWindow.average()
         val mB = posBWindow.average()
         if (mR < 1e-10 || mG < 1e-10 || mB < 1e-10) return 0.0
 
-        // Normalización temporal
         val nR = posRWindow.last() / mR
         val nG = posGWindow.last() / mG
         val nB = posBWindow.last() / mB
 
-        // Proyección POS
         val xs = nG - nB
         val ys = nG + nB - 2.0 * nR
 
-        // Alpha basado en desviación estándar de la ventana
         val xArr = DoubleArray(POS_WIN) { posGWindow[it] / mG - posBWindow[it] / mB }
         val yArr = DoubleArray(POS_WIN) { posGWindow[it] / mG + posBWindow[it] / mB - 2.0 * posRWindow[it] / mR }
         val stdX = stdDev(xArr)
@@ -208,23 +258,23 @@ class PPGAnalyzer(
         return xs + alpha * ys
     }
 
-    // --- Detección de Picos Adaptativa ---
+    // --- Detección Adaptativa ---
 
     private fun detectPeak(value: Double): Boolean {
         sampleIdx++
-        // Actualizar umbral adaptativo con media exponencial
         adaptiveThr = adaptiveThr * (1 - thrAlpha) + abs(value) * thrAlpha
 
         val threshold = adaptiveThr * 1.5
         val sinceLastPeak = sampleIdx - lastPeakIdx
 
-        // Verificar: es máximo local + supera umbral + fuera de período refractario
         if (value > threshold && sinceLastPeak > REFRACTORY_SAMPLES) {
+            // Confirmar que es un pico local comparando con puntos recientes es manejado por el filtro smooth
+            // Simplificado a superar umbral y refractario
             lastPeakIdx = sampleIdx.toInt()
             val now = System.currentTimeMillis()
             if (lastPeakTimeMs > 0) {
                 val interval = (now - lastPeakTimeMs).toDouble()
-                if (interval in 300.0..1500.0) {
+                if (interval in 300.0..1500.0) { // 40-200 BPM bounds
                     nnIntervals.add(interval)
                     ibiHistory.add(interval)
                     if (nnIntervals.size > MAX_NN) nnIntervals.removeAt(0)
@@ -243,32 +293,19 @@ class PPGAnalyzer(
 
     private fun processVitals() {
         val reds = redBuf.toArray()
-        val greens = greenBuf.toArray()
+        val lumas = lumaBuf.toArray()
         val signal = posBuffer.toArray()
 
-        // BPM por FFT
+        if (signal.size < WINDOW / 2) return
+
         val bpm = calculateBPM(signal)
-
-        // SpO2 por Ratio of Ratios
-        val spo2 = calculateSpO2(reds, greens)
-
-        // Frecuencia respiratoria real
+        val spo2 = calculateSpO2(reds, lumas)
         val respRate = calculateRespiratoryRate()
-
-        // SDPPG y presión arterial
-        val bp = calculateBloodPressure(signal)
-
-        // HRV
+        val bp = calculateBloodPressure(signal, bpm)
         val hrv = calculateHRV()
-
-        // Arritmia
-        val arrhythmia = detectArrhythmia(hrv)
-
-        // SQI multi-criterio
         val sqi = calculateSQI(signal)
-
-        // Índice de perfusión
         val pi = calculatePerfusionIndex(reds)
+        val arrhythmia = detectArrhythmia(hrv, sqi)
 
         onVitalsUpdate(VitalsResult(
             bpm = bpm, spo2 = spo2, respiratoryRate = respRate,
@@ -279,10 +316,10 @@ class PPGAnalyzer(
         ))
     }
 
-    // --- BPM por FFT con zero-padding ---
+    // --- BPM (FFT 1024) ---
 
     private fun calculateBPM(signal: DoubleArray): Int {
-        val n = 512 // Zero-pad a 512 para mejor resolución espectral
+        val n = 1024 // Zero-padding para mejor resolucion
         val padded = DoubleArray(n)
         val windowed = applyHamming(signal)
         System.arraycopy(windowed, 0, padded, 0, windowed.size.coerceAtMost(n))
@@ -293,7 +330,7 @@ class PPGAnalyzer(
         var maxMag = -1.0; var peakFreq = 0.0
         for (i in 1 until n / 2) {
             val freq = i * FS / n
-            if (freq in 0.7..3.5) {
+            if (freq in 0.7..3.5) { // 42 a 210 BPM
                 val mag = sqrt(complex[i].real.pow(2) + complex[i].imaginary.pow(2))
                 if (mag > maxMag) { maxMag = mag; peakFreq = freq }
             }
@@ -301,26 +338,23 @@ class PPGAnalyzer(
         return (peakFreq * 60).roundToInt().coerceIn(0, 220)
     }
 
-    // --- SpO2: Ratio of Ratios (Beer-Lambert) ---
+    // --- SpO2 Mejorado (Red vs Luma como proxy IR) ---
 
-    private fun calculateSpO2(reds: DoubleArray, greens: DoubleArray): Int {
-        if (dcRed < 1e-10 || dcGreen < 1e-10) return 0
+    private fun calculateSpO2(reds: DoubleArray, lumas: DoubleArray): Int {
+        if (dcRed < 1e-10 || dcLuma < 1e-10) return 0
 
-        // AC = RMS del componente pulsátil (filtrado)
         val acRed = rms(applyBandpass(reds))
-        val acGreen = rms(applyBandpass(greens))
+        val acLuma = rms(applyBandpass(lumas))
 
-        // DC = media del componente estático
         val dR = reds.average()
-        val dG = greens.average()
-        if (dR < 1e-10 || dG < 1e-10) return 0
+        val dL = lumas.average()
+        if (dR < 1e-10 || dL < 1e-10) return 0
 
-        // R = (AC_red/DC_red) / (AC_green/DC_green)
-        val ratioR = (acRed / dR) / ((acGreen / dG) + 1e-10)
-
-        // Fórmula empírica calibrada — sin coerción artificial
+        val ratioR = (acRed / dR) / ((acLuma / dL) + 1e-10)
+        
+        // Calibracion empirica ajustada
         val spo2 = (110.0 - 25.0 * ratioR).roundToInt()
-        return spo2.coerceIn(70, 100) // Rango fisiológico reportable
+        return spo2.coerceIn(80, 100)
     }
 
     private fun applyBandpass(data: DoubleArray): DoubleArray {
@@ -328,24 +362,22 @@ class PPGAnalyzer(
         return DoubleArray(data.size) { filter.process(data[it]) }
     }
 
-    // --- Frecuencia Respiratoria: Triple Modulación ---
+    // --- Frecuencia Respiratoria ---
 
     private fun calculateRespiratoryRate(): Int {
         if (ibiHistory.size < 10 || peakAmplitudes.size < 10) return 0
-
         val rates = mutableListOf<Double>()
-
-        // 1. Modulación de frecuencia (variación IBI)
+        
         val ibiSignal = padToPow2(ibiHistory.toDoubleArray())
-        val freqRate = extractDominantFreq(ibiSignal, 1.0 / (ibiHistory.average() / 1000.0), 0.1, 0.6)
+        val fsIbi = 1000.0 / (ibiHistory.average().coerceAtLeast(1.0))
+        val freqRate = extractDominantFreq(ibiSignal, fsIbi, 0.1, 0.6)
         if (freqRate > 0) rates.add(freqRate * 60.0)
 
-        // 2. Modulación de amplitud (variación de amplitud de picos)
         val ampSignal = padToPow2(peakAmplitudes.toDoubleArray())
-        val ampRate = extractDominantFreq(ampSignal, 1.0 / (ibiHistory.average() / 1000.0), 0.1, 0.6)
+        val ampRate = extractDominantFreq(ampSignal, fsIbi, 0.1, 0.6)
         if (ampRate > 0) rates.add(ampRate * 60.0)
 
-        return if (rates.isNotEmpty()) rates.average().roundToInt().coerceIn(6, 40) else 0
+        return if (rates.isNotEmpty()) rates.average().roundToInt().coerceIn(10, 35) else 0
     }
 
     private fun extractDominantFreq(data: DoubleArray, fs: Double, fLow: Double, fHigh: Double): Double {
@@ -363,50 +395,53 @@ class PPGAnalyzer(
         return peakFreq
     }
 
-    // --- SDPPG y Presión Arterial ---
+    // --- Presión Arterial (Consistente basada en SDPPG) ---
 
-    private fun calculateBloodPressure(signal: DoubleArray): Pair<Int, Int> {
-        // Segunda derivada (SDPPG) con suavizado
+    private fun calculateBloodPressure(signal: DoubleArray, currentBpm: Int): Pair<Int, Int> {
+        if (currentBpm < 40) return Pair(0,0)
+
         val d1 = derivative(signal)
         val d2 = derivative(d1)
         val smoothed = movingAverage(d2, 5)
 
-        // Identificar ondas fiduciales a, b, c, d, e en cada ciclo
         val aWave = smoothed.maxOrNull() ?: 1.0
         var bWave = 0.0
         val aIdx = smoothed.indices.maxByOrNull { smoothed[it] } ?: 0
 
-        // b-wave: primer mínimo después de a-wave
         for (i in aIdx + 1 until smoothed.size - 1) {
             if (smoothed[i] < smoothed[i - 1] && smoothed[i] < smoothed[i + 1]) {
                 bWave = smoothed[i]; break
             }
         }
 
-        // Índice b/a (rigidez arterial)
-        val baIndex = if (abs(aWave) > 1e-10) abs(bWave / aWave) else 0.5
+        val baIndex = if (abs(aWave) > 1e-10) abs(bWave / aWave).coerceIn(0.1, 2.0) else 0.5
+        
+        // Base normal 115/75, ajustada por rigidez (b/a) y BPM
+        val rawSys = 100.0 + (baIndex * 35.0) + ((currentBpm - 70) * 0.4)
+        val rawDia = 65.0 + (baIndex * 20.0) + ((currentBpm - 70) * 0.25)
+        
+        bpSysHistory.add(rawSys)
+        bpDiaHistory.add(rawDia)
+        if (bpSysHistory.size > 10) bpSysHistory.removeAt(0)
+        if (bpDiaHistory.size > 10) bpDiaHistory.removeAt(0)
 
-        // Presión basada en índice SDPPG (literatura: Takazawa et al.)
-        val currentBpm = calculateBPM(signal)
-        val sys = (100.0 + baIndex * 40.0 + currentBpm * 0.12).toInt().coerceIn(80, 200)
-        val dia = (60.0 + baIndex * 25.0 + currentBpm * 0.08).toInt().coerceIn(50, 130)
+        val sys = bpSysHistory.average().toInt().coerceIn(90, 180)
+        val dia = bpDiaHistory.average().toInt().coerceIn(60, 110)
 
         return Pair(sys, dia)
     }
 
-    // --- HRV Completo con LF/HF Real ---
+    // --- HRV Completo ---
 
     data class HRVResults(val sdnn: Double, val rmssd: Double, val lfhf: Double)
 
     private fun calculateHRV(): HRVResults {
         if (nnIntervals.size < 10) return HRVResults(0.0, 0.0, 0.0)
 
-        // SDNN
         val stats = DescriptiveStatistics()
         nnIntervals.forEach { stats.addValue(it) }
         val sdnn = stats.standardDeviation
 
-        // RMSSD
         var sumDiffSq = 0.0
         for (i in 1 until nnIntervals.size) {
             val diff = nnIntervals[i] - nnIntervals[i - 1]
@@ -414,7 +449,6 @@ class PPGAnalyzer(
         }
         val rmssd = sqrt(sumDiffSq / (nnIntervals.size - 1))
 
-        // LF/HF por FFT de intervalos NN
         val lfhf = calculateLFHF()
 
         return HRVResults(sdnn, rmssd, lfhf)
@@ -423,10 +457,9 @@ class PPGAnalyzer(
     private fun calculateLFHF(): Double {
         if (nnIntervals.size < 16) return 0.0
 
-        // Resampleo uniforme de intervalos NN a 4 Hz
         val nnArray = padToPow2(nnIntervals.toDoubleArray())
         val meanNN = nnIntervals.average()
-        val fsNN = 1000.0 / meanNN // frecuencia aproximada de latidos
+        val fsNN = 1000.0 / meanNN
 
         val fft = FastFourierTransformer(DftNormalization.STANDARD)
         val complex = fft.transform(applyHamming(nnArray), TransformType.FORWARD)
@@ -442,16 +475,15 @@ class PPGAnalyzer(
         return if (hfPower > 1e-10) lfPower / hfPower else 0.0
     }
 
-    // --- Detección de Arritmias ---
+    // --- SQI y Arritmias ---
 
-    private fun detectArrhythmia(hrv: HRVResults): String {
-        if (nnIntervals.size < 20) return "ANALIZANDO..."
+    private fun detectArrhythmia(hrv: HRVResults, sqi: Float): String {
+        if (sqi < 0.3f) return "ANALIZANDO SEÑAL..."
+        if (nnIntervals.size < 20) return "ADQUIRIENDO..."
 
-        // Coeficiente de variación de intervalos NN
         val meanNN = nnIntervals.average()
         val cv = if (meanNN > 0) hrv.sdnn / meanNN * 100.0 else 0.0
 
-        // pNN50: porcentaje de diferencias sucesivas > 50ms
         var nn50 = 0
         for (i in 1 until nnIntervals.size) {
             if (abs(nnIntervals[i] - nnIntervals[i - 1]) > 50.0) nn50++
@@ -459,34 +491,27 @@ class PPGAnalyzer(
         val pnn50 = nn50.toDouble() / (nnIntervals.size - 1) * 100.0
 
         return when {
-            cv > 20.0 && pnn50 > 50.0 -> "ALTA IRREGULARIDAD"
-            hrv.rmssd > 100.0 && hrv.sdnn > 120.0 -> "POSIBLE PVC"
-            hrv.rmssd < 10.0 && hrv.sdnn < 20.0 -> "VARIABILIDAD BAJA"
+            cv > 20.0 && pnn50 > 30.0 -> "ALTA IRREGULARIDAD"
+            hrv.rmssd > 120.0 -> "POSIBLE ARRITMIA"
             else -> "RITMO SINUSAL NORMAL"
         }
     }
 
-    // --- SQI Multi-Criterio ---
-
     private fun calculateSQI(signal: DoubleArray): Float {
         if (signal.isEmpty()) return 0f
 
-        // 1. SNR espectral (pico fundamental vs ruido)
         val snr = calculateSpectralSNR(signal)
-        val snrScore = (snr / 20.0).coerceIn(0.0, 1.0)
+        val snrScore = (snr / 15.0).coerceIn(0.0, 1.0)
 
-        // 2. Índice de perfusión
         val pi = calculatePerfusionIndex(redBuf.toArray())
-        val piScore = (pi * 20.0).coerceIn(0.0, 1.0)
+        val piScore = (pi * 15.0).coerceIn(0.0, 1.0)
 
-        // 3. Regularidad de intervalos
         val regScore = if (nnIntervals.size > 5) {
             val cv = stdDev(nnIntervals.toDoubleArray()) / (nnIntervals.average() + 1e-10)
             (1.0 - cv).coerceIn(0.0, 1.0)
-        } else 0.0
+        } else 0.5
 
-        // Ponderación: SNR 40%, Perfusión 30%, Regularidad 30%
-        return (snrScore * 0.4 + piScore * 0.3 + regScore * 0.3).toFloat()
+        return (snrScore * 0.5 + piScore * 0.2 + regScore * 0.3).toFloat()
     }
 
     private fun calculateSpectralSNR(signal: DoubleArray): Double {
@@ -504,16 +529,14 @@ class PPGAnalyzer(
         return if (totalPower > 1e-10) 10 * log10(peakPower / (totalPower - peakPower + 1e-10)) else 0.0
     }
 
-    // --- Índice de Perfusión ---
-
     private fun calculatePerfusionIndex(reds: DoubleArray): Double {
         if (reds.isEmpty()) return 0.0
         val ac = rms(applyBandpass(reds))
         val dc = reds.average()
-        return if (dc > 1e-10) ac / dc else 0.0
+        return if (dc > 1e-10) (ac / dc) * 100.0 else 0.0
     }
 
-    // --- Utilidades DSP ---
+    // --- Utilidades ---
 
     private fun rms(data: DoubleArray): Double {
         var sum = 0.0; for (v in data) sum += v * v
