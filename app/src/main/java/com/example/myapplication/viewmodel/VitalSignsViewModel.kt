@@ -2,8 +2,12 @@ package com.example.myapplication.viewmodel
 
 import androidx.compose.runtime.mutableStateListOf
 import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import com.example.myapplication.analyzer.PPGAnalyzer
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 
 data class VitalSignsState(
     val bpm: Int = 0,
@@ -15,49 +19,67 @@ data class VitalSignsState(
     val sdnn: Double = 0.0,
     val rmssd: Double = 0.0,
     val lfhfRatio: Double = 0.0,
-    val arrhythmiaStatus: String = "SCANNING",
+    val arrhythmiaStatus: String = "ESPERANDO DEDO...",
+    val fingerDetected: Boolean = false,
+    val perfusionIndex: Double = 0.0,
     val isStabilityReached: Boolean = false
 )
 
 class VitalSignsViewModel : ViewModel() {
-    
+
     private val _uiState = MutableStateFlow(VitalSignsState())
     val uiState = _uiState.asStateFlow()
 
+    // Buffer de puntos para la gráfica — solo se modifica desde Main
     val ppgPoints = mutableStateListOf<Float>()
-    private val maxPoints = 150
+    val peakFlags = mutableStateListOf<Boolean>()
+    private val maxPoints = 300 // ~10 segundos a 30fps
+    var sweepIndex = 0
+        private set
 
-    fun addPpgPoint(value: Double) {
-        ppgPoints.add(value.toFloat())
-        if (ppgPoints.size > maxPoints) {
-            ppgPoints.removeAt(0)
+    // Smoothing de BPM (media de últimas 3 lecturas)
+    private val bpmHistory = mutableListOf<Int>()
+    private val smoothWindow = 3
+
+    fun addPpgPoint(value: Double, isPeak: Boolean) {
+        viewModelScope.launch(Dispatchers.Main.immediate) {
+            if (ppgPoints.size >= maxPoints) {
+                ppgPoints[sweepIndex % maxPoints] = value.toFloat()
+                if (peakFlags.size > sweepIndex % maxPoints) {
+                    peakFlags[sweepIndex % maxPoints] = isPeak
+                }
+            } else {
+                ppgPoints.add(value.toFloat())
+                peakFlags.add(isPeak)
+            }
+            sweepIndex++
         }
     }
 
-    fun updateResults(
-        bpm: Int, 
-        spo2: Int, 
-        breathRate: Int, 
-        sys: Int, 
-        dia: Int, 
-        sqi: Float,
-        sdnn: Double = 0.0,
-        rmssd: Double = 0.0,
-        lfhf: Double = 0.0,
-        arrhythmia: String = "NORMAL"
-    ) {
-        _uiState.value = _uiState.value.copy(
-            bpm = bpm,
-            spo2 = spo2,
-            respiratoryRate = breathRate,
-            bloodPressureSys = sys,
-            bloodPressureDia = dia,
-            sqi = sqi,
-            sdnn = sdnn,
-            rmssd = rmssd,
-            lfhfRatio = lfhf,
-            arrhythmiaStatus = arrhythmia,
-            isStabilityReached = sqi > 0.4f && bpm > 0
-        )
+    fun updateResults(result: PPGAnalyzer.VitalsResult) {
+        viewModelScope.launch(Dispatchers.Main.immediate) {
+            // Smoothing BPM
+            if (result.bpm > 0) {
+                bpmHistory.add(result.bpm)
+                if (bpmHistory.size > smoothWindow) bpmHistory.removeAt(0)
+            }
+            val smoothBpm = if (bpmHistory.isNotEmpty()) bpmHistory.average().toInt() else 0
+
+            _uiState.value = VitalSignsState(
+                bpm = smoothBpm,
+                spo2 = result.spo2,
+                respiratoryRate = result.respiratoryRate,
+                bloodPressureSys = result.systolic,
+                bloodPressureDia = result.diastolic,
+                sqi = result.sqi,
+                sdnn = result.sdnn,
+                rmssd = result.rmssd,
+                lfhfRatio = result.lfhfRatio,
+                arrhythmiaStatus = result.arrhythmiaStatus,
+                fingerDetected = result.fingerDetected,
+                perfusionIndex = result.perfusionIndex,
+                isStabilityReached = result.sqi > 0.4f && smoothBpm > 0
+            )
+        }
     }
 }
