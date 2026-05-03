@@ -34,13 +34,14 @@ class VitalSignsViewModel : ViewModel() {
     // Buffer de puntos para la gráfica — 600 puntos (~20s a 30fps)
     val ppgPoints = mutableStateListOf<Float>()
     val peakFlags = mutableStateListOf<Boolean>()
-    private val maxPoints = 600 
+    private val maxPoints = 900 // 15s a 60fps
+
     var sweepIndex = 0
         private set
 
-    // Smoothing de BPM (media de últimas 5 lecturas)
+    // Smoothing de BPM (media de últimas 10 lecturas para mayor estabilidad)
     private val bpmHistory = mutableListOf<Int>()
-    private val smoothWindow = 5
+    private val smoothWindow = 10
     
     private var lastPeakTime = 0L
 

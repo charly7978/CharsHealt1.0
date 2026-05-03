@@ -99,7 +99,7 @@ fun PPGMonitorScreen(
                 points = viewModel.ppgPoints,
                 peaks = viewModel.peakFlags,
                 sweepIndex = viewModel.sweepIndex,
-                maxPoints = 600
+                maxPoints = 900
             )
 
             // Overlays de métricas (estilo Philips IntelliVue)
@@ -429,49 +429,61 @@ fun PPGSweepGraph(points: List<Float>, peaks: List<Boolean>, sweepIndex: Int, ma
         val w = size.width
         val h = size.height
         val n = points.size
-        val gap = 15 // Gap de borrado
+        val gap = (maxPoints * 0.03).toInt() // 3% gap de borrado
         val writePos = sweepIndex % maxPoints
 
-        val minVal = points.minOrNull() ?: -1f
-        val maxVal = points.maxOrNull() ?: 1f
+        // Descartar extremos ruidosos iniciales
+        val validPoints = points.filter { !it.isNaN() }
+        val minVal = validPoints.minOrNull() ?: -1f
+        val maxVal = validPoints.maxOrNull() ?: 1f
         val range = (maxVal - minVal).coerceAtLeast(0.0001f)
 
         fun xOf(i: Int) = i * (w / maxPoints.toFloat())
         fun yOf(v: Float) = h - ((v - minVal) / range) * h
 
-        for (i in 1 until n) {
+        for (i in 1 until n - 1) {
             val dist = ((writePos - i + maxPoints) % maxPoints)
             if (dist < gap) continue
 
-            val alpha = (1f - dist.toFloat() / maxPoints).coerceIn(0.2f, 1f)
+            val alpha = (1f - dist.toFloat() / maxPoints).coerceIn(0.15f, 1f)
+            
             val x0 = xOf(i - 1); val y0 = yOf(points[i - 1])
             val x1 = xOf(i); val y1 = yOf(points[i])
+            val x2 = xOf(i + 1); val y2 = yOf(points[i + 1])
+            
+            // Punto medio para suavizado Bézier cuadrático continuo
+            val xc1 = (x0 + x1) / 2
+            val yc1 = (y0 + y1) / 2
+            val xc2 = (x1 + x2) / 2
+            val yc2 = (y1 + y2) / 2
 
-            // Trace principal grueso y luminoso
-            drawLine(
+            val path = Path().apply {
+                moveTo(xc1, yc1)
+                quadraticBezierTo(x1, y1, xc2, yc2)
+            }
+
+            drawPath(
+                path = path,
                 color = NeonGreen.copy(alpha = alpha),
-                start = Offset(x0, y0),
-                end = Offset(x1, y1),
-                strokeWidth = 3.dp.toPx(),
-                cap = StrokeCap.Round
+                style = Stroke(width = 3.5.dp.toPx(), cap = StrokeCap.Round)
             )
 
             // Marcador de pico (Triángulo invertido)
             if (i < peaks.size && peaks[i]) {
-                val path = Path().apply {
+                val peakPath = Path().apply {
                     moveTo(x1, y1 - 15.dp.toPx())
                     lineTo(x1 - 6.dp.toPx(), y1 - 25.dp.toPx())
                     lineTo(x1 + 6.dp.toPx(), y1 - 25.dp.toPx())
                     close()
                 }
-                drawPath(path, color = Color.White)
+                drawPath(peakPath, color = Color.White)
             }
         }
 
         if (n > 0) {
             val sweepX = xOf(writePos % n.coerceAtLeast(1))
             drawLine(
-                color = NeonGreen.copy(alpha = 0.8f),
+                color = NeonGreen.copy(alpha = 0.9f),
                 start = Offset(sweepX, 0f),
                 end = Offset(sweepX, h),
                 strokeWidth = 2.dp.toPx()
