@@ -60,10 +60,8 @@ class PPGAnalyzer(
     private val greenBuf = CircularBuffer(WINDOW)
     private val blueBuf = CircularBuffer(WINDOW)
 
-    // Filtros Butterworth bandpass 0.5–4.0 Hz para señal cardíaca
+    // Filtro Butterworth bandpass 0.5–4.0 Hz para señal cardíaca
     private val cardiacFilter = CascadedFilter.butterworthBandpass(0.5, 4.0, FS)
-    // Filtros para envolvente respiratoria 0.1–0.6 Hz
-    private val respFilter = CascadedFilter.butterworthBandpass(0.1, 0.6, FS)
 
     // Estado de detección de picos
     private var lastPeakIdx = -REFRACTORY_SAMPLES
@@ -376,7 +374,7 @@ class PPGAnalyzer(
         // Identificar ondas fiduciales a, b, c, d, e en cada ciclo
         val aWave = smoothed.maxOrNull() ?: 1.0
         var bWave = 0.0
-        var aIdx = smoothed.indices.maxByOrNull { smoothed[it] } ?: 0
+        val aIdx = smoothed.indices.maxByOrNull { smoothed[it] } ?: 0
 
         // b-wave: primer mínimo después de a-wave
         for (i in aIdx + 1 until smoothed.size - 1) {
@@ -389,8 +387,9 @@ class PPGAnalyzer(
         val baIndex = if (abs(aWave) > 1e-10) abs(bWave / aWave) else 0.5
 
         // Presión basada en índice SDPPG (literatura: Takazawa et al.)
-        val sys = (100.0 + baIndex * 40.0 + calculateBPM(signal) * 0.12).toInt().coerceIn(80, 200)
-        val dia = (60.0 + baIndex * 25.0 + calculateBPM(signal) * 0.08).toInt().coerceIn(50, 130)
+        val currentBpm = calculateBPM(signal)
+        val sys = (100.0 + baIndex * 40.0 + currentBpm * 0.12).toInt().coerceIn(80, 200)
+        val dia = (60.0 + baIndex * 25.0 + currentBpm * 0.08).toInt().coerceIn(50, 130)
 
         return Pair(sys, dia)
     }
