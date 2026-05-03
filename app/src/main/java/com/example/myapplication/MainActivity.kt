@@ -1,12 +1,23 @@
 package com.example.myapplication
 
+import android.Manifest
+import android.content.pm.PackageManager
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.core.content.ContextCompat
+import com.example.myapplication.ui.PPGMonitorScreen
 import com.example.myapplication.ui.theme.MyApplicationTheme
 
 class MainActivity : ComponentActivity() {
@@ -14,12 +25,33 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         setContent {
             MyApplicationTheme {
-                // A surface container using the 'background' color from the theme
+                var hasCameraPermission by remember {
+                    mutableStateOf(
+                        ContextCompat.checkSelfPermission(
+                            this,
+                            Manifest.permission.CAMERA
+                        ) == PackageManager.PERMISSION_GRANTED
+                    )
+                }
+                
+                val launcher = rememberLauncherForActivityResult(
+                    contract = ActivityResultContracts.RequestPermission(),
+                    onResult = { granted -> hasCameraPermission = granted }
+                )
+
+                LaunchedEffect(Unit) {
+                    if (!hasCameraPermission) {
+                        launcher.launch(Manifest.permission.CAMERA)
+                    }
+                }
+
                 Surface(
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colorScheme.background,
                 ) {
-                    BakingScreen()
+                    if (hasCameraPermission) {
+                        PPGMonitorScreen()
+                    }
                 }
             }
         }
