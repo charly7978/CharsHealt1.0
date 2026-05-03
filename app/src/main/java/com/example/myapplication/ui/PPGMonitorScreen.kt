@@ -45,9 +45,9 @@ fun PPGMonitorScreen(
         modifier = Modifier
             .fillMaxSize()
             .background(MedicalBlack)
-            .padding(16.dp)
+            .padding(12.dp)
     ) {
-        // Título Estilo Hospitalario
+        // CABECERA: SISTEMA DE DIAGNÓSTICO
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
@@ -55,204 +55,173 @@ fun PPGMonitorScreen(
         ) {
             Column {
                 Text(
-                    text = "CHARS HEALTH",
+                    text = "CHARS HEALTH | PRO-DIAGNOSTIC",
                     color = NeonCyan,
-                    fontSize = 18.sp,
+                    fontSize = 16.sp,
                     fontWeight = FontWeight.Black,
                     fontFamily = FontFamily.Monospace
                 )
                 Text(
-                    text = "BIOSIGNAL ACQUISITION UNIT v1.0",
+                    text = "REAL-TIME ARRHYTHMIA & HRV ANALYSIS",
                     color = Color.Gray,
-                    fontSize = 10.sp,
+                    fontSize = 9.sp,
                     fontFamily = FontFamily.Monospace
                 )
             }
-            Text(
-                text = "SYSTEM READY",
-                color = NeonGreen,
-                fontSize = 10.sp,
-                fontWeight = FontWeight.Bold
-            )
+            
+            StatusIndicator(status = uiState.arrhythmiaStatus)
         }
 
-        Spacer(modifier = Modifier.height(20.dp))
+        Spacer(modifier = Modifier.height(12.dp))
 
-        // MONITOR CARDIACO PRINCIPAL (EGG/PPG)
+        // MONITOR PRINCIPAL
         Card(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(250.dp),
+            modifier = Modifier.fillMaxWidth().height(220.dp),
             colors = CardDefaults.cardColors(containerColor = Color.Black),
             border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF1F1F1F)),
             shape = RoundedCornerShape(4.dp)
         ) {
             Box(modifier = Modifier.fillMaxSize()) {
-                // Dibujamos el Grid de fondo
                 MedicalGrid()
-                
-                // Dibujamos la Onda PPG
                 PPGGraph(points = viewModel.ppgPoints)
                 
-                // Overlay de Información de Tiempo Real
+                // Readout Digital
                 Column(
-                    modifier = Modifier
-                        .align(Alignment.TopEnd)
-                        .padding(12.dp),
+                    modifier = Modifier.align(Alignment.TopEnd).padding(12.dp),
                     horizontalAlignment = Alignment.End
                 ) {
+                    Text(text = "HR (BPM)", color = NeonGreen, fontSize = 10.sp, fontWeight = FontWeight.Bold)
                     Text(
-                        text = "HEART RATE",
+                        text = if(uiState.sqi > 0.3f) "${uiState.bpm}" else "--",
                         color = NeonGreen,
-                        fontSize = 10.sp,
-                        fontWeight = FontWeight.Bold
-                    )
-                    Text(
-                        text = "${uiState.bpm}",
-                        color = NeonGreen,
-                        fontSize = 54.sp,
+                        fontSize = 56.sp,
                         fontWeight = FontWeight.Black,
                         fontFamily = FontFamily.Monospace
                     )
                     Text(
-                        text = "BPM",
-                        color = NeonGreen,
-                        fontSize = 12.sp,
+                        text = "SQI: ${(uiState.sqi * 100).toInt()}%",
+                        color = if(uiState.sqi > 0.6f) NeonGreen else BloodRed,
+                        fontSize = 9.sp,
                         fontWeight = FontWeight.Bold
                     )
                 }
             }
         }
 
-        Spacer(modifier = Modifier.height(20.dp))
+        Spacer(modifier = Modifier.height(12.dp))
 
-        // PANELES LATERALES DE SIGNOS VITALES
-        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        // GRID DE MÉTRICAS AVANZADAS
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            VitalSignPanel(label = "SPO2 %", value = if(uiState.sqi > 0.4f) "${uiState.spo2}" else "--", color = NeonCyan, modifier = Modifier.weight(1f))
+            VitalSignPanel(label = "BP (mmHg)", value = if(uiState.sqi > 0.5f) "${uiState.bloodPressureSys}/${uiState.bloodPressureDia}" else "--/--", color = BloodRed, modifier = Modifier.weight(1f))
+        }
+        
+        Spacer(modifier = Modifier.height(8.dp))
+        
+        // HRV PANEL (NUEVO)
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             VitalSignPanel(
-                label = "SPO2 %",
-                value = if(uiState.spo2 > 0) "${uiState.spo2}" else "--",
-                unit = "Oxygen Sat.",
-                color = NeonCyan,
+                label = "SDNN (ms)", 
+                value = if(uiState.sdnn > 0) "%.1f".format(uiState.sdnn) else "--", 
+                color = WarningYellow, 
                 modifier = Modifier.weight(1f)
             )
             VitalSignPanel(
-                label = "NIBP mmHg",
-                value = if(uiState.bloodPressureSys > 0) "${uiState.bloodPressureSys}/${uiState.bloodPressureDia}" else "--/--",
-                unit = "Art. Pressure",
-                color = BloodRed,
+                label = "RMSSD (ms)", 
+                value = if(uiState.rmssd > 0) "%.1f".format(uiState.rmssd) else "--", 
+                color = Color.Magenta, 
                 modifier = Modifier.weight(1f)
             )
         }
-        
+
         Spacer(modifier = Modifier.height(12.dp))
-        
-        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            VitalSignPanel(
-                label = "RESP br/min",
-                value = if(uiState.respiratoryRate > 0) "${uiState.respiratoryRate}" else "--",
-                unit = "Breath Rate",
-                color = WarningYellow,
-                modifier = Modifier.weight(1f)
-            )
-            VitalSignPanel(
-                label = "PI %",
-                value = "4.2", // Perfusion Index (calculado en fase 2)
-                unit = "Perfusion",
-                color = Color.White,
-                modifier = Modifier.weight(1f)
-            )
+
+        // ANALIZADOR DE RITMO
+        Surface(
+            modifier = Modifier.fillMaxWidth().height(60.dp),
+            color = Color(0xFF0A0A0A),
+            shape = RoundedCornerShape(4.dp),
+            border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF1A1A1A))
+        ) {
+            Row(
+                modifier = Modifier.padding(horizontal = 12.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(text = "RHYTHM:", color = Color.Gray, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = uiState.arrhythmiaStatus,
+                    color = if(uiState.arrhythmiaStatus.contains("NORMAL")) NeonGreen else if(uiState.arrhythmiaStatus.contains("SCANNING")) Color.Gray else BloodRed,
+                    fontSize = 16.sp,
+                    fontWeight = FontWeight.Black,
+                    fontFamily = FontFamily.Monospace
+                )
+            }
         }
 
         Spacer(modifier = Modifier.weight(1f))
 
-        // AREA DE CAPTACION DEL SENSOR
-        Box(
-            modifier = Modifier
-                .size(120.dp)
-                .align(Alignment.CenterHorizontally)
-                .background(MedicalDarkGray, RoundedCornerShape(60.dp))
-                .padding(4.dp)
-        ) {
-            AndroidView(
-                factory = { ctx ->
-                    val previewView = PreviewView(ctx)
-                    cameraProviderFuture.addListener({
-                        val cameraProvider = cameraProviderFuture.get()
-                        val preview = androidx.camera.core.Preview.Builder().build().also {
-                            it.setSurfaceProvider(previewView.surfaceProvider)
-                        }
-
-                        val imageAnalysis = ImageAnalysis.Builder()
-                            .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-                            .setTargetRotation(previewView.display.rotation)
-                            .build()
-                            .also {
-                                it.setAnalyzer(executor, PPGAnalyzer(
-                                    onPointProcessed = { point ->
-                                        viewModel.addPpgPoint(point)
-                                    },
-                                    onResultUpdate = { bpm, spo2, breath ->
-                                        viewModel.updateResults(bpm, spo2, breath)
-                                    }
-                                ))
-                            }
-
-                        val cameraSelector = CameraSelector.DEFAULT_BACK_CAMERA
-
-                        try {
-                            cameraProvider.unbindAll()
-                            val camera = cameraProvider.bindToLifecycle(
-                                lifecycleOwner,
-                                cameraSelector,
-                                preview,
-                                imageAnalysis
-                            )
-                            if (camera.cameraInfo.hasFlashUnit()) {
+        // SENSOR & FEEDBACK
+        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.align(Alignment.CenterHorizontally)) {
+            Box(
+                modifier = Modifier.size(80.dp).background(MedicalDarkGray, RoundedCornerShape(40.dp)).padding(4.dp)
+            ) {
+                AndroidView(
+                    factory = { ctx ->
+                        val previewView = PreviewView(ctx)
+                        cameraProviderFuture.addListener({
+                            val cameraProvider = cameraProviderFuture.get()
+                            val preview = androidx.camera.core.Preview.Builder().build().also { it.setSurfaceProvider(previewView.surfaceProvider) }
+                            val imageAnalysis = ImageAnalysis.Builder()
+                                .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                                .build()
+                                .also {
+                                    it.setAnalyzer(executor, PPGAnalyzer(
+                                        onPointProcessed = { point -> viewModel.addPpgPoint(point) },
+                                        onResultUpdate = { bpm, spo2, breath, sys, dia, sqi, sdnn, rmssd, lfhf, arrhythmia ->
+                                            viewModel.updateResults(bpm, spo2, breath, sys, dia, sqi, sdnn, rmssd, lfhf, arrhythmia)
+                                        }
+                                    ))
+                                }
+                            try {
+                                cameraProvider.unbindAll()
+                                val camera = cameraProvider.bindToLifecycle(lifecycleOwner, CameraSelector.DEFAULT_BACK_CAMERA, preview, imageAnalysis)
                                 camera.cameraControl.enableTorch(true)
-                            }
-                        } catch (e: Exception) { e.printStackTrace() }
-                    }, ContextCompat.getMainExecutor(ctx))
-                    previewView
-                },
-                modifier = Modifier.fillMaxSize()
+                            } catch (e: Exception) { e.printStackTrace() }
+                        }, ContextCompat.getMainExecutor(ctx))
+                        previewView
+                    },
+                    modifier = Modifier.fillMaxSize()
+                )
+            }
+            Spacer(modifier = Modifier.width(16.dp))
+            Text(
+                text = "BIOMETRIC ACQUISITION\nIN PROGRESS...",
+                color = Color.Gray,
+                fontSize = 10.sp,
+                fontWeight = FontWeight.Bold,
+                fontFamily = FontFamily.Monospace
             )
         }
-        
-        Text(
-            text = "SCANNING BIOMETRIC DATA...",
-            color = Color.Gray,
-            fontSize = 10.sp,
-            fontWeight = FontWeight.Bold,
-            fontFamily = FontFamily.Monospace,
-            modifier = Modifier.align(Alignment.CenterHorizontally).padding(top = 12.dp)
-        )
+    }
+}
+
+@Composable
+fun StatusIndicator(status: String) {
+    val color = if(status.contains("NORMAL")) NeonGreen else if(status.contains("SCANNING")) Color.Gray else BloodRed
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Box(modifier = Modifier.size(8.dp).background(color, RoundedCornerShape(4.dp)))
+        Spacer(modifier = Modifier.width(6.dp))
+        Text(text = "LIVE", color = color, fontSize = 10.sp, fontWeight = FontWeight.Bold)
     }
 }
 
 @Composable
 fun MedicalGrid() {
     Canvas(modifier = Modifier.fillMaxSize()) {
-        val stepX = 40.dp.toPx()
-        val stepY = 40.dp.toPx()
-        
-        // Líneas Verticales
-        for (x in 0 until (size.width / stepX).toInt()) {
-            drawLine(
-                color = Color(0xFF1A1A1A),
-                start = Offset(x * stepX, 0f),
-                end = Offset(x * stepX, size.height),
-                strokeWidth = 1f
-            )
-        }
-        // Líneas Horizontales
-        for (y in 0 until (size.height / stepY).toInt()) {
-            drawLine(
-                color = Color(0xFF1A1A1A),
-                start = Offset(0f, y * stepY),
-                end = Offset(size.width, y * stepY),
-                strokeWidth = 1f
-            )
-        }
+        val step = 30.dp.toPx()
+        for (x in 0 until (size.width / step).toInt()) drawLine(color = Color(0xFF121212), start = Offset(x * step, 0f), end = Offset(x * step, size.height), strokeWidth = 1f)
+        for (y in 0 until (size.height / step).toInt()) drawLine(color = Color(0xFF121212), start = Offset(0f, y * step), end = Offset(size.width, y * step), strokeWidth = 1f)
     }
 }
 
@@ -260,46 +229,33 @@ fun MedicalGrid() {
 fun PPGGraph(points: List<Float>) {
     Canvas(modifier = Modifier.fillMaxSize()) {
         if (points.size < 2) return@Canvas
-        
         val path = Path()
         val width = size.width
         val height = size.height
-        
-        // Auto-scaling dinámico para máxima resolución visual
         val minVal = points.minOrNull() ?: 0f
         val maxVal = points.maxOrNull() ?: 1f
-        val range = (maxVal - minVal).coerceAtLeast(0.01f)
-
+        val range = (maxVal - minVal).coerceAtLeast(0.00001f)
         points.forEachIndexed { index, value ->
             val x = index * (width / 150f)
-            val y = height - ((value - minVal) / range) * height
-            
-            // Suavizado básico mediante interpolación de puntos
-            if (index == 0) path.moveTo(x, y)
-            else path.lineTo(x, y)
+            val y = height / 2 - ((value - minVal) / range - 0.5f) * height * 0.8f
+            if (index == 0) path.moveTo(x, y) else path.lineTo(x, y)
         }
-
-        drawPath(
-            path = path,
-            color = NeonGreen,
-            style = Stroke(width = 2.dp.toPx())
-        )
+        drawPath(path = path, color = NeonGreen, style = Stroke(width = 2.dp.toPx()))
     }
 }
 
 @Composable
-fun VitalSignPanel(label: String, value: String, unit: String, color: Color, modifier: Modifier) {
+fun VitalSignPanel(label: String, value: String, color: Color, modifier: Modifier) {
     Surface(
-        modifier = modifier.height(110.dp),
-        color = Color(0xFF0F0F0F),
-        shape = RoundedCornerShape(4.dp),
-        border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF1F1F1F))
+        modifier = modifier.height(80.dp),
+        color = Color(0xFF0A0A0A),
+        shape = RoundedCornerShape(2.dp),
+        border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF1A1A1A))
     ) {
-        Column(modifier = Modifier.padding(12.dp)) {
-            Text(text = label, color = color, fontSize = 11.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+        Column(modifier = Modifier.padding(8.dp)) {
+            Text(text = label, color = color, fontSize = 9.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
             Spacer(modifier = Modifier.weight(1f))
-            Text(text = value, color = Color.White, fontSize = 32.sp, fontWeight = FontWeight.Black, fontFamily = FontFamily.Monospace)
-            Text(text = unit, color = Color.Gray, fontSize = 9.sp, fontFamily = FontFamily.Monospace)
+            Text(text = value, color = Color.White, fontSize = 24.sp, fontWeight = FontWeight.Black, fontFamily = FontFamily.Monospace)
         }
     }
 }

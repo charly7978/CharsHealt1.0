@@ -11,6 +11,11 @@ data class VitalSignsState(
     val respiratoryRate: Int = 0,
     val bloodPressureSys: Int = 0,
     val bloodPressureDia: Int = 0,
+    val sqi: Float = 0f,
+    val sdnn: Double = 0.0,
+    val rmssd: Double = 0.0,
+    val lfhfRatio: Double = 0.0,
+    val arrhythmiaStatus: String = "SCANNING",
     val isStabilityReached: Boolean = false
 )
 
@@ -19,31 +24,40 @@ class VitalSignsViewModel : ViewModel() {
     private val _uiState = MutableStateFlow(VitalSignsState())
     val uiState = _uiState.asStateFlow()
 
-    // Flujo de datos para el gráfico en tiempo real
     val ppgPoints = mutableStateListOf<Float>()
     private val maxPoints = 150
 
     fun addPpgPoint(value: Double) {
-        // Normalización básica para visualización (esto se mejorará con auto-scaling)
         ppgPoints.add(value.toFloat())
         if (ppgPoints.size > maxPoints) {
             ppgPoints.removeAt(0)
         }
     }
 
-    fun updateResults(bpm: Int, spo2: Int, breathRate: Int) {
-        // Cálculo de presión arterial (PA) basado en morfología
-        // Algoritmo PTT (Pulse Transit Time) estimado
-        val sys = 110 + (bpm / 10) // Placeholder matemático inicial
-        val dia = 70 + (bpm / 20)
-        
+    fun updateResults(
+        bpm: Int, 
+        spo2: Int, 
+        breathRate: Int, 
+        sys: Int, 
+        dia: Int, 
+        sqi: Float,
+        sdnn: Double = 0.0,
+        rmssd: Double = 0.0,
+        lfhf: Double = 0.0,
+        arrhythmia: String = "NORMAL"
+    ) {
         _uiState.value = _uiState.value.copy(
             bpm = bpm,
             spo2 = spo2,
             respiratoryRate = breathRate,
             bloodPressureSys = sys,
             bloodPressureDia = dia,
-            isStabilityReached = bpm > 0
+            sqi = sqi,
+            sdnn = sdnn,
+            rmssd = rmssd,
+            lfhfRatio = lfhf,
+            arrhythmiaStatus = arrhythmia,
+            isStabilityReached = sqi > 0.4f && bpm > 0
         )
     }
 }
